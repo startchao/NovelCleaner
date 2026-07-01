@@ -8,6 +8,7 @@ const state = {
   author: '',
   mode: 'tw',
   output: 'txt',
+  paragraphMax: 220,
   stats: null,
   opts: {
     removeAds: true,
@@ -17,6 +18,9 @@ const state = {
     dedupeChapterTitles: true,
     removeFrontMatter: true,
     normalizeSpacing: true,
+    repairBrokenLines: true,
+    splitLongParagraphs: true,
+    splitDialogueParagraphs: true,
   },
 };
 
@@ -40,7 +44,7 @@ function render() {
       <div class="grid two"><label>書名<input class="textin" id="title" value="${esc(state.title)}" placeholder="留空自動使用檔名 / 內文標題"></label><label>作者<input class="textin" id="author" value="${esc(state.author)}" placeholder="選填；可自動從 作者： 擷取"></label></div>
     </section>
     <section class="card"><div class="sec-title">03 處理選項</div><div class="opts">${optRows()}</div>
-      <div class="seg" style="margin-top:12px"><button data-mode="tw" class="${state.mode==='tw'?'on':''}">台灣用詞</button><button data-mode="hk" class="${state.mode==='hk'?'on':''}">香港用詞</button><button data-mode="std" class="${state.mode==='std'?'on':''}">標準繁體</button></div>
+      <div class="grid two" style="margin-top:12px"><label>長段落切分門檻<input class="textin" id="paragraphMax" type="number" min="120" max="800" step="20" value="${state.paragraphMax}"></label><p class="hint">像截圖那種一整頁只有一段，建議 180–260 字。太低會切太碎；太高會保留原文。</p></div><div class="seg" style="margin-top:12px"><button data-mode="tw" class="${state.mode==='tw'?'on':''}">台灣用詞</button><button data-mode="hk" class="${state.mode==='hk'?'on':''}">香港用詞</button><button data-mode="std" class="${state.mode==='std'?'on':''}">標準繁體</button></div>
     </section>
     <section class="card"><div class="sec-title">04 輸出格式</div><div class="seg"><button data-output="txt" class="${state.output==='txt'?'on':''}">處理後 TXT</button><button data-output="epub" class="${state.output==='epub'?'on':''}">EPUB 檔案</button></div></section>
     <section class="card"><div class="actions"><button class="primary" id="run">⚡ 開始處理</button><button class="ghost" id="downloadTxt" ${state.clean?'':'disabled'}>下載 TXT</button><button class="ghost" id="downloadEpub" ${state.clean?'':'disabled'}>下載 EPUB</button></div>${statsHtml()}</section>
@@ -59,6 +63,9 @@ function optRows() {
     ['dedupeChapterTitles','重複章節名稱清理','處理圖三到圖五那種同章名、日期、作者、空白頁重複問題'],
     ['removeFrontMatter','移除章節前雜訊','刪除章名後緊接的日期、作者、來源、空白 metadata 行'],
     ['normalizeSpacing','空白與段落整理','合併過多空行、整理全形空白與標點周圍空格'],
+    ['repairBrokenLines','錯誤換行修復','把被硬切成多行的同一段文字合併，避免一句話被切碎'],
+    ['splitLongParagraphs','長段落自動切分','針對一整頁塞成同一段的文字，依句號、問號、驚嘆號與長度切段'],
+    ['splitDialogueParagraphs','對話段落整理','遇到引號對話與「某某說道」段落時，盡量切成獨立段落'],
   ];
   return defs.map(([k,t,d]) => `<div class="opt"><div><b>${t}</b><span>${d}</span></div><label class="sw"><input type="checkbox" data-opt="${k}" ${state.opts[k]?'checked':''}><span class="knob"></span></label></div>`).join('');
 }
@@ -66,7 +73,7 @@ function optRows() {
 function statsHtml() {
   if (!state.stats) return '<p class="hint">會顯示刪除廣告、分隔線、重複章名、章節數與字數變化。</p>';
   const s = state.stats;
-  return `<div class="stats"><div class="stat"><b>${s.chapters}</b><span>章節</span></div><div class="stat"><b>${s.removedAds}</b><span>廣告</span></div><div class="stat"><b>${s.removedDupes}</b><span>重複章名</span></div><div class="stat"><b>${s.outChars}</b><span>輸出字數</span></div></div>`;
+  return `<div class="stats"><div class="stat"><b>${s.chapters}</b><span>章節</span></div><div class="stat"><b>${s.removedAds}</b><span>廣告</span></div><div class="stat"><b>${s.removedDupes}</b><span>重複章名</span></div><div class="stat"><b>${s.splitParagraphs}</b><span>切段</span></div><div class="stat"><b>${s.mergedLines}</b><span>併行</span></div><div class="stat"><b>${s.suspiciousParagraphs}</b><span>待檢</span></div><div class="stat"><b>${s.outChars}</b><span>輸出字數</span></div></div>`;
 }
 
 function bind() {
@@ -77,6 +84,7 @@ function bind() {
   drop?.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); loadFile(e.dataTransfer.files[0]); });
   $('#title')?.addEventListener('input', e => state.title = e.target.value);
   $('#author')?.addEventListener('input', e => state.author = e.target.value);
+  $('#paragraphMax')?.addEventListener('input', e => state.paragraphMax = Number(e.target.value) || 220);
   $$('[data-opt]').forEach(i => i.addEventListener('change', e => state.opts[e.target.dataset.opt] = e.target.checked));
   $$('[data-mode]').forEach(b => b.addEventListener('click', () => { state.mode = b.dataset.mode; render(); }));
   $$('[data-output]').forEach(b => b.addEventListener('click', () => { state.output = b.dataset.output; render(); }));
@@ -111,7 +119,7 @@ function processNovel() {
   const log = [];
   let lines = state.raw.replace(/\r\n?/g, '\n').split('\n');
   const before = lines.join('\n').length;
-  const stats = { chapters: 0, removedAds: 0, removedSeparators: 0, removedDupes: 0, removedFront: 0, outChars: 0, log };
+  const stats = { chapters: 0, removedAds: 0, removedSeparators: 0, removedDupes: 0, removedFront: 0, mergedLines: 0, splitParagraphs: 0, suspiciousParagraphs: 0, outChars: 0, log };
   log.push(`讀入：${state.file?.name || '文字'}，${before.toLocaleString()} 字`);
 
   lines = lines.map(l => l.replace(/\u00a0/g, ' ').replace(/[ \t]+$/g, ''));
@@ -120,7 +128,9 @@ function processNovel() {
   if (state.opts.fixBrokenWords) lines = lines.map(fixBrokenWords);
   if (state.opts.convertTraditional) lines = lines.map(toTraditional);
   if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
+  if (state.opts.repairBrokenLines) lines = repairBrokenLines(lines, stats);
   if (state.opts.dedupeChapterTitles || state.opts.removeFrontMatter) lines = cleanChapters(lines, stats);
+  if (state.opts.splitDialogueParagraphs || state.opts.splitLongParagraphs) lines = adjustParagraphs(lines, stats);
   if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
 
   const txt = lines.join('\n').trim() + '\n';
@@ -128,6 +138,9 @@ function processNovel() {
   stats.outChars = txt.length;
   stats.log.push(`輸出：${stats.outChars.toLocaleString()} 字，偵測 ${stats.chapters} 章`);
   if (stats.removedFront) stats.log.push(`已移除章節前 metadata / 空白頁：${stats.removedFront} 行`);
+  if (stats.mergedLines) stats.log.push(`已合併疑似錯誤換行：${stats.mergedLines} 行`);
+  if (stats.splitParagraphs) stats.log.push(`已切分過長／對話段落：${stats.splitParagraphs} 段`);
+  if (stats.suspiciousParagraphs) stats.log.push(`仍有偏長段落需人工檢查：${stats.suspiciousParagraphs} 段`);
   state.clean = txt;
   state.stats = stats;
   render();
@@ -159,6 +172,73 @@ function normalizeSpacing(lines) {
   }
   return out;
 }
+function repairBrokenLines(lines, stats) {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
+    if (!line || isChapterTitle(line) || isMeta(line)) { out.push(line); continue; }
+    while (i + 1 < lines.length) {
+      const next = lines[i + 1].trim();
+      if (!next || isChapterTitle(next) || isMeta(next)) break;
+      const currentEnds = /[。！？!?」”』…]$/.test(line);
+      const nextStartsNew = /^[「“『（(]|^(第[零〇一二兩三四五六七八九十百千萬\d]+[章回卷節集部篇])/.test(next);
+      if (currentEnds || nextStartsNew) break;
+      line += next;
+      stats.mergedLines++;
+      i++;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function adjustParagraphs(lines, stats) {
+  const max = Math.min(800, Math.max(120, Number(state.paragraphMax) || 220));
+  const out = [];
+  for (const original of lines) {
+    const line = original.trim();
+    if (!line || isChapterTitle(line) || isMeta(line)) { out.push(line); continue; }
+    let parts = [line];
+    if (state.opts.splitDialogueParagraphs) parts = splitDialogue(parts);
+    if (state.opts.splitLongParagraphs) parts = parts.flatMap(p => splitLongParagraph(p, max));
+    if (parts.length > 1) stats.splitParagraphs += parts.length - 1;
+    for (const p of parts) {
+      if (p.length > max * 1.8) stats.suspiciousParagraphs++;
+      out.push(p);
+      out.push('');
+    }
+  }
+  return out;
+}
+
+function splitDialogue(parts) {
+  const out = [];
+  for (const p of parts) {
+    const text = p.replace(/」\s*(?=[「“『])/g, '」\n').replace(/([。！？!?」”』])\s*([安蕾雷他她我你][^，。！？!?「“『]{0,8}(?:說|说道|道|問|答|笑|頓了頓))/g, '$1\n$2');
+    out.push(...text.split('\n').map(x => x.trim()).filter(Boolean));
+  }
+  return out;
+}
+
+function splitLongParagraph(text, max) {
+  if (text.length <= max) return [text];
+  const sentences = text.match(/[^。！？!?；;…]+[。！？!?；;…」”』]*|.+$/g) || [text];
+  const out = [];
+  let buf = '';
+  for (const s of sentences) {
+    const next = buf + s;
+    if (buf && next.length > max) { out.push(buf); buf = s; }
+    else buf = next;
+  }
+  if (buf) out.push(buf);
+  return out.flatMap(chunk => {
+    if (chunk.length <= max * 1.8) return [chunk];
+    const forced = [];
+    for (let i = 0; i < chunk.length; i += max) forced.push(chunk.slice(i, i + max));
+    return forced;
+  });
+}
+
 function isChapterTitle(line) {
   const t = line.trim();
   return /^(第[零〇一二兩三四五六七八九十百千萬\d]+[章回卷節集部篇].{0,40}|Chapter\s*\d+.{0,40}|\d+[\.、]\s*.{1,40})$/i.test(t);
