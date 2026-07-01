@@ -1,0 +1,205 @@
+import './style.css';
+
+const state = {
+  file: null,
+  raw: '',
+  clean: '',
+  title: '',
+  author: '',
+  mode: 'tw',
+  output: 'txt',
+  stats: null,
+  opts: {
+    removeAds: true,
+    removeSeparators: true,
+    fixBrokenWords: true,
+    convertTraditional: true,
+    dedupeChapterTitles: true,
+    removeFrontMatter: true,
+    normalizeSpacing: true,
+  },
+};
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const phraseMap = [
+  ['里面','裡面'],['这里','這裡'],['这','這'],['个','個'],['为','為'],['与','與'],['后','後'],['说','說'],['时','時'],['会','會'],['来','來'],['对','對'],['过','過'],['没','沒'],['见','見'],['门','門'],['开','開'],['关','關'],['点','點'],['头','頭'],['发','發'],['长','長'],['万','萬'],['东','東'],['风','風'],['云','雲'],['国','國'],['体','體'],['语','語'],['书','書'],['号','號'],['杀','殺'],['稳','穩'],['卫','衛'],['护','護'],['镇','鎮'],['魔','魔'],['司','司'],['鲜','鮮'],['血','血'],['众','眾'],['气','氣'],['给','給'],['从','從'],['当','當'],['则','則'],['还','還'],['无','無'],['将','將'],['师','師'],['义','義'],['变','變'],['处','處'],['经','經'],['线','線'],['网','網'],['页','頁'],['章节','章節'],['标题','標題'],['台湾','台灣'],['香港','香港']
+];
+const hkMap = [['裡','裏'],['台','臺']];
+
+function render() {
+  $('#app').innerHTML = `
+  <main class="wrap">
+    <section class="hero"><div class="logo">📚</div><div><h1>轉書坊</h1><p>TXT/MD 小說前處理 · 修章名 · 去廣告 · 轉繁體 · 匯出 TXT/EPUB</p></div></section>
+    <section class="card"><div class="sec-title">01 上傳小說檔案</div>
+      <div class="drop" id="drop"><div><div style="font-size:42px">📄</div><p class="hint">支援 TXT / MD · UTF‑8 / Big5 / GB18030 · 建議單檔 100MB 內</p><label class="filebtn">選擇檔案<input id="file" type="file" accept=".txt,.md,text/plain,text/markdown"></label><p id="fname" class="hint">${state.file ? esc(state.file.name) : '尚未選擇檔案'}</p></div></div>
+    </section>
+    <section class="card"><div class="sec-title">02 書籍資訊</div>
+      <div class="grid two"><label>書名<input class="textin" id="title" value="${esc(state.title)}" placeholder="留空自動使用檔名 / 內文標題"></label><label>作者<input class="textin" id="author" value="${esc(state.author)}" placeholder="選填；可自動從 作者： 擷取"></label></div>
+    </section>
+    <section class="card"><div class="sec-title">03 處理選項</div><div class="opts">${optRows()}</div>
+      <div class="seg" style="margin-top:12px"><button data-mode="tw" class="${state.mode==='tw'?'on':''}">台灣用詞</button><button data-mode="hk" class="${state.mode==='hk'?'on':''}">香港用詞</button><button data-mode="std" class="${state.mode==='std'?'on':''}">標準繁體</button></div>
+    </section>
+    <section class="card"><div class="sec-title">04 輸出格式</div><div class="seg"><button data-output="txt" class="${state.output==='txt'?'on':''}">處理後 TXT</button><button data-output="epub" class="${state.output==='epub'?'on':''}">EPUB 檔案</button></div></section>
+    <section class="card"><div class="actions"><button class="primary" id="run">⚡ 開始處理</button><button class="ghost" id="downloadTxt" ${state.clean?'':'disabled'}>下載 TXT</button><button class="ghost" id="downloadEpub" ${state.clean?'':'disabled'}>下載 EPUB</button></div>${statsHtml()}</section>
+    <section class="card"><div class="sec-title">05 處理紀錄</div><div class="log" id="log">${state.stats ? esc(state.stats.log.join('\n')) : '尚未處理。'}</div></section>
+    <section class="card"><div class="sec-title">06 預覽</div><textarea readonly>${esc(state.clean.slice(0, 12000))}</textarea><p class="hint">預覽最多顯示前 12,000 字；下載會輸出完整內容。</p></section>
+  </main>`;
+  bind();
+}
+
+function optRows() {
+  const defs = [
+    ['removeAds','廣告與網站名過濾','移除爬蟲網站插入的廣告、網址與閱讀提示'],
+    ['removeSeparators','分隔線清除','移除 ===、---、~~~、＊ 等純符號行'],
+    ['fixBrokenWords','修復拆字詞彙','修正「谷欠→欲、氵去→法、身寸→射」等常見避審拆字'],
+    ['convertTraditional','簡體→繁體轉換','內建常用詞對照表；非完整 OpenCC，但可離線使用'],
+    ['dedupeChapterTitles','重複章節名稱清理','處理圖三到圖五那種同章名、日期、作者、空白頁重複問題'],
+    ['removeFrontMatter','移除章節前雜訊','刪除章名後緊接的日期、作者、來源、空白 metadata 行'],
+    ['normalizeSpacing','空白與段落整理','合併過多空行、整理全形空白與標點周圍空格'],
+  ];
+  return defs.map(([k,t,d]) => `<div class="opt"><div><b>${t}</b><span>${d}</span></div><label class="sw"><input type="checkbox" data-opt="${k}" ${state.opts[k]?'checked':''}><span class="knob"></span></label></div>`).join('');
+}
+
+function statsHtml() {
+  if (!state.stats) return '<p class="hint">會顯示刪除廣告、分隔線、重複章名、章節數與字數變化。</p>';
+  const s = state.stats;
+  return `<div class="stats"><div class="stat"><b>${s.chapters}</b><span>章節</span></div><div class="stat"><b>${s.removedAds}</b><span>廣告</span></div><div class="stat"><b>${s.removedDupes}</b><span>重複章名</span></div><div class="stat"><b>${s.outChars}</b><span>輸出字數</span></div></div>`;
+}
+
+function bind() {
+  $('#file')?.addEventListener('change', e => loadFile(e.target.files[0]));
+  const drop = $('#drop');
+  drop?.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+  drop?.addEventListener('dragleave', () => drop.classList.remove('drag'));
+  drop?.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); loadFile(e.dataTransfer.files[0]); });
+  $('#title')?.addEventListener('input', e => state.title = e.target.value);
+  $('#author')?.addEventListener('input', e => state.author = e.target.value);
+  $$('[data-opt]').forEach(i => i.addEventListener('change', e => state.opts[e.target.dataset.opt] = e.target.checked));
+  $$('[data-mode]').forEach(b => b.addEventListener('click', () => { state.mode = b.dataset.mode; render(); }));
+  $$('[data-output]').forEach(b => b.addEventListener('click', () => { state.output = b.dataset.output; render(); }));
+  $('#run')?.addEventListener('click', processNovel);
+  $('#downloadTxt')?.addEventListener('click', () => downloadText());
+  $('#downloadEpub')?.addEventListener('click', () => downloadEpub());
+}
+
+async function loadFile(file) {
+  if (!file) return;
+  state.file = file;
+  const buf = await file.arrayBuffer();
+  state.raw = decodeBuffer(buf);
+  if (!state.title) state.title = file.name.replace(/\.(txt|md)$/i, '');
+  const author = state.raw.match(/作者[：: ]+([^\n\r]{1,30})/);
+  if (author && !state.author) state.author = author[1].trim();
+  state.clean = '';
+  state.stats = null;
+  render();
+}
+
+function decodeBuffer(buf) {
+  const tryDecode = enc => { try { return new TextDecoder(enc, { fatal: false }).decode(buf); } catch { return ''; } };
+  const utf8 = tryDecode('utf-8');
+  const bad = (utf8.match(/�/g) || []).length;
+  if (bad < 8) return utf8.replace(/^\uFEFF/, '');
+  return (tryDecode('gb18030') || tryDecode('big5') || utf8).replace(/^\uFEFF/, '');
+}
+
+function processNovel() {
+  if (!state.raw) return alert('請先選擇 TXT / MD 檔案');
+  const log = [];
+  let lines = state.raw.replace(/\r\n?/g, '\n').split('\n');
+  const before = lines.join('\n').length;
+  const stats = { chapters: 0, removedAds: 0, removedSeparators: 0, removedDupes: 0, removedFront: 0, outChars: 0, log };
+  log.push(`讀入：${state.file?.name || '文字'}，${before.toLocaleString()} 字`);
+
+  lines = lines.map(l => l.replace(/\u00a0/g, ' ').replace(/[ \t]+$/g, ''));
+  if (state.opts.removeAds) lines = removeAds(lines, stats);
+  if (state.opts.removeSeparators) lines = removeSeparators(lines, stats);
+  if (state.opts.fixBrokenWords) lines = lines.map(fixBrokenWords);
+  if (state.opts.convertTraditional) lines = lines.map(toTraditional);
+  if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
+  if (state.opts.dedupeChapterTitles || state.opts.removeFrontMatter) lines = cleanChapters(lines, stats);
+  if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
+
+  const txt = lines.join('\n').trim() + '\n';
+  stats.chapters = lines.filter(isChapterTitle).length;
+  stats.outChars = txt.length;
+  stats.log.push(`輸出：${stats.outChars.toLocaleString()} 字，偵測 ${stats.chapters} 章`);
+  if (stats.removedFront) stats.log.push(`已移除章節前 metadata / 空白頁：${stats.removedFront} 行`);
+  state.clean = txt;
+  state.stats = stats;
+  render();
+}
+
+function removeAds(lines, stats) {
+  const patterns = [/https?:\/\//i,/www\./i,/請收藏/i,/收藏本站/i,/最新网址/i,/最新網址/i,/手機閱讀/i,/无弹窗/i,/無彈窗/i,/筆趣閣/i,/起點中文/i,/番茄小說/i,/本章未完/i,/點擊下一頁/i,/加入書架/i,/天才一秒記住/i,/app下載/i];
+  return lines.filter(l => { const hit = patterns.some(p => p.test(l)); if (hit) stats.removedAds++; return !hit; });
+}
+function removeSeparators(lines, stats) {
+  return lines.filter(l => { const t = l.trim(); const hit = /^[=\-—_~＊*·•。\s]{3,}$/.test(t); if (hit) stats.removedSeparators++; return !hit; });
+}
+function fixBrokenWords(s) {
+  return s.replace(/谷\s*欠/g, '欲').replace(/氵\s*去/g, '法').replace(/身\s*寸/g, '射').replace(/口\s*交/g, '咬').replace(/忄\s*青/g, '情').replace(/亻\s*爾/g, '你').replace(/女\s*干/g, '奸');
+}
+function toTraditional(s) {
+  let out = s;
+  for (const [a,b] of phraseMap) out = out.replaceAll(a,b);
+  if (state.mode === 'hk') for (const [a,b] of hkMap) out = out.replaceAll(a,b);
+  return out;
+}
+function normalizeSpacing(lines) {
+  const out = [];
+  let blank = 0;
+  for (let l of lines) {
+    l = l.replace(/^[\s　]+|[\s　]+$/g, '').replace(/[　]{2,}/g, '　');
+    if (!l) { blank++; if (blank <= 1) out.push(''); }
+    else { blank = 0; out.push(l); }
+  }
+  return out;
+}
+function isChapterTitle(line) {
+  const t = line.trim();
+  return /^(第[零〇一二兩三四五六七八九十百千萬\d]+[章回卷節集部篇].{0,40}|Chapter\s*\d+.{0,40}|\d+[\.、]\s*.{1,40})$/i.test(t);
+}
+function isMeta(line) {
+  const t = line.trim();
+  return !t || /^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?$/.test(t) || /^作者[：: ]/.test(t) || /^書名[：: ]/.test(t) || /^來源[：: ]/.test(t) || /^更新[：: ]/.test(t) || /^字數[：: ]/.test(t);
+}
+function cleanChapters(lines, stats) {
+  const out = [];
+  let lastChapter = '';
+  let afterChapter = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (isChapterTitle(line)) {
+      const norm = line.replace(/\s+/g, '');
+      if (state.opts.dedupeChapterTitles && norm === lastChapter) { stats.removedDupes++; afterChapter = 1; continue; }
+      if (out.length && out[out.length - 1] !== '') out.push('');
+      out.push(line);
+      lastChapter = norm;
+      afterChapter = 1;
+      continue;
+    }
+    if (state.opts.removeFrontMatter && afterChapter > 0 && afterChapter < 8 && isMeta(line)) { stats.removedFront++; afterChapter++; continue; }
+    out.push(line);
+    afterChapter = line ? 0 : afterChapter ? afterChapter + 1 : 0;
+  }
+  return out;
+}
+function safeName(ext) {
+  return `${(state.title || 'novel').replace(/[\\/:*?"<>|]/g, '_')}.${ext}`;
+}
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1200);
+}
+function downloadText() { if (!state.clean) return; downloadBlob(new Blob([state.clean], { type: 'text/plain;charset=utf-8' }), safeName('txt')); }
+function downloadEpub() {
+  if (!state.clean) return;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(state.title || 'Novel')}</title><style>body{font-family:serif;line-height:1.7}h1{page-break-before:always}p{text-indent:2em;margin:.8em 0}</style></head><body>${state.clean.split('\n').map(l => isChapterTitle(l) ? `<h1>${esc(l)}</h1>` : l ? `<p>${esc(l)}</p>` : '').join('\n')}</body></html>`;
+  downloadBlob(new Blob([html], { type: 'application/xhtml+xml;charset=utf-8' }), safeName('html'));
+  alert('MVP 先輸出可匯入多數閱讀器的 HTML；正式 EPUB zip 封裝下一版加入。');
+}
+
+render();
