@@ -19,7 +19,7 @@ const state = {
     removeFrontMatter: true,
     normalizeSpacing: true,
     repairBrokenLines: true,
-    splitLongParagraphs: true,
+    splitLongParagraphs: false,
     splitDialogueParagraphs: true,
   },
 };
@@ -32,6 +32,8 @@ const phraseMap = [
   ['里面','裡面'],['这里','這裡'],['这','這'],['个','個'],['为','為'],['与','與'],['后','後'],['说','說'],['时','時'],['会','會'],['来','來'],['对','對'],['过','過'],['没','沒'],['见','見'],['门','門'],['开','開'],['关','關'],['点','點'],['头','頭'],['发','發'],['长','長'],['万','萬'],['东','東'],['风','風'],['云','雲'],['国','國'],['体','體'],['语','語'],['书','書'],['号','號'],['杀','殺'],['稳','穩'],['卫','衛'],['护','護'],['镇','鎮'],['魔','魔'],['司','司'],['鲜','鮮'],['血','血'],['众','眾'],['气','氣'],['给','給'],['从','從'],['当','當'],['则','則'],['还','還'],['无','無'],['将','將'],['师','師'],['义','義'],['变','變'],['处','處'],['经','經'],['线','線'],['网','網'],['页','頁'],['章节','章節'],['标题','標題'],['台湾','台灣'],['香港','香港']
 ];
 const hkMap = [['裡','裏'],['台','臺']];
+let activeConverter = null;
+let converterCache = null;
 
 function render() {
   $('#app').innerHTML = `
@@ -44,7 +46,7 @@ function render() {
       <div class="grid two"><label>書名<input class="textin" id="title" value="${esc(state.title)}" placeholder="留空自動使用檔名 / 內文標題"></label><label>作者<input class="textin" id="author" value="${esc(state.author)}" placeholder="選填；可自動從 作者： 擷取"></label></div>
     </section>
     <section class="card"><div class="sec-title">03 處理選項</div><div class="opts">${optRows()}</div>
-      <div class="grid two" style="margin-top:12px"><label>長段落切分門檻<input class="textin" id="paragraphMax" type="number" min="120" max="800" step="20" value="${state.paragraphMax}"></label><p class="hint">像截圖那種一整頁只有一段，建議 180–260 字。太低會切太碎；太高會保留原文。</p></div><div class="seg" style="margin-top:12px"><button data-mode="tw" class="${state.mode==='tw'?'on':''}">台灣用詞</button><button data-mode="hk" class="${state.mode==='hk'?'on':''}">香港用詞</button><button data-mode="std" class="${state.mode==='std'?'on':''}">標準繁體</button></div>
+      <div class="grid two" style="margin-top:12px"><label>長段落檢查門檻<input class="textin" id="paragraphMax" type="number" min="120" max="800" step="20" value="${state.paragraphMax}"></label><p class="hint">預設不硬切句子，只標記過長段落；如果要自動切，才打開「長段落自動切分」。</p></div><div class="seg" style="margin-top:12px"><button data-mode="tw" class="${state.mode==='tw'?'on':''}">台灣用詞</button><button data-mode="hk" class="${state.mode==='hk'?'on':''}">香港用詞</button><button data-mode="std" class="${state.mode==='std'?'on':''}">標準繁體</button></div>
     </section>
     <section class="card"><div class="sec-title">04 輸出格式</div><div class="seg"><button data-output="txt" class="${state.output==='txt'?'on':''}">處理後 TXT</button><button data-output="epub" class="${state.output==='epub'?'on':''}">EPUB 檔案</button></div></section>
     <section class="card"><div class="actions"><button class="primary" id="run">⚡ 開始處理</button><button class="ghost" id="downloadTxt" ${state.clean?'':'disabled'}>下載 TXT</button><button class="ghost" id="downloadEpub" ${state.clean?'':'disabled'}>下載 EPUB</button></div>${statsHtml()}</section>
@@ -59,13 +61,13 @@ function optRows() {
     ['removeAds','廣告與網站名過濾','移除爬蟲網站插入的廣告、網址與閱讀提示'],
     ['removeSeparators','分隔線清除','移除 ===、---、~~~、＊ 等純符號行'],
     ['fixBrokenWords','修復拆字詞彙','修正「谷欠→欲、氵去→法、身寸→射」等常見避審拆字'],
-    ['convertTraditional','簡體→繁體轉換','內建常用詞對照表；非完整 OpenCC，但可離線使用'],
+    ['convertTraditional','簡體→繁體轉換','改用 OpenCC 轉換：台灣、香港、標準繁體三種模式'],
     ['dedupeChapterTitles','重複章節名稱清理','處理圖三到圖五那種同章名、日期、作者、空白頁重複問題'],
     ['removeFrontMatter','移除章節前雜訊','刪除章名後緊接的日期、作者、來源、空白 metadata 行'],
     ['normalizeSpacing','空白與段落整理','合併過多空行、整理全形空白與標點周圍空格'],
     ['repairBrokenLines','錯誤換行修復','把被硬切成多行的同一段文字合併，避免一句話被切碎'],
-    ['splitLongParagraphs','長段落自動切分','針對一整頁塞成同一段的文字，依句號、問號、驚嘆號與長度切段'],
-    ['splitDialogueParagraphs','對話段落整理','遇到引號對話與「某某說道」段落時，盡量切成獨立段落'],
+    ['splitLongParagraphs','長段落自動切分（預設關）','只在你明確打開時，才依標點把超長段落切開；平常只檢查不硬切'],
+    ['splitDialogueParagraphs','對話段落整理','只針對引號對話與「某某說道」這類明顯邊界補分行，避免整頁黏成一段'],
   ];
   return defs.map(([k,t,d]) => `<div class="opt"><div><b>${t}</b><span>${d}</span></div><label class="sw"><input type="checkbox" data-opt="${k}" ${state.opts[k]?'checked':''}><span class="knob"></span></label></div>`).join('');
 }
@@ -114,7 +116,7 @@ function decodeBuffer(buf) {
   return (tryDecode('gb18030') || tryDecode('big5') || utf8).replace(/^\uFEFF/, '');
 }
 
-function processNovel() {
+async function processNovel() {
   if (!state.raw) return alert('請先選擇 TXT / MD 檔案');
   const log = [];
   let lines = state.raw.replace(/\r\n?/g, '\n').split('\n');
@@ -126,7 +128,11 @@ function processNovel() {
   if (state.opts.removeAds) lines = removeAds(lines, stats);
   if (state.opts.removeSeparators) lines = removeSeparators(lines, stats);
   if (state.opts.fixBrokenWords) lines = lines.map(fixBrokenWords);
-  if (state.opts.convertTraditional) lines = lines.map(toTraditional);
+  if (state.opts.convertTraditional) {
+    activeConverter = await getOpenCCConverter();
+    lines = lines.map(toTraditional);
+    log.push(`已使用 OpenCC 轉換為${state.mode === 'hk' ? '香港繁體' : state.mode === 'std' ? '標準繁體' : '台灣繁體'}`);
+  }
   if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
   if (state.opts.repairBrokenLines) lines = repairBrokenLines(lines, stats);
   if (state.opts.dedupeChapterTitles || state.opts.removeFrontMatter) lines = cleanChapters(lines, stats);
@@ -147,7 +153,16 @@ function processNovel() {
 }
 
 function removeAds(lines, stats) {
-  const patterns = [/https?:\/\//i,/www\./i,/請收藏/i,/收藏本站/i,/最新网址/i,/最新網址/i,/手機閱讀/i,/无弹窗/i,/無彈窗/i,/筆趣閣/i,/起點中文/i,/番茄小說/i,/本章未完/i,/點擊下一頁/i,/加入書架/i,/天才一秒記住/i,/app下載/i];
+  const patterns = [
+    /https?:\/\//i,/www\./i,/\.com|\.net|\.org|\.tw|\.cn/i,
+    /請收藏|请收藏|收藏本站|加入書架|加入书架/i,
+    /最新網址|最新网址|最新地址|最新域名|備用域名|备用域名|本站域名|首發域名|首发域名/i,
+    /手機閱讀|手机阅读|無彈窗|无弹窗|免費閱讀|免费阅读|全文閱讀|全文阅读/i,
+    /本章未完|點擊下一頁|点击下一页|下一章|上一章/i,
+    /天才一秒記住|天才一秒钟记住|app下載|app下载|下載APP|下载APP/i,
+    /筆趣閣|笔趣阁|起點中文|起点中文|番茄小說|番茄小说/i,
+    /飄天|飘天|piaotian|ptwx|69書吧|69书吧|六九書吧|六九书吧|69shu|69shuba|69zw|69txt/i,
+  ];
   return lines.filter(l => { const hit = patterns.some(p => p.test(l)); if (hit) stats.removedAds++; return !hit; });
 }
 function removeSeparators(lines, stats) {
@@ -156,8 +171,21 @@ function removeSeparators(lines, stats) {
 function fixBrokenWords(s) {
   return s.replace(/谷\s*欠/g, '欲').replace(/氵\s*去/g, '法').replace(/身\s*寸/g, '射').replace(/口\s*交/g, '咬').replace(/忄\s*青/g, '情').replace(/亻\s*爾/g, '你').replace(/女\s*干/g, '奸');
 }
+async function getOpenCCConverter() {
+  if (!converterCache) {
+    const { Converter } = await import('opencc-js');
+    converterCache = {
+      tw: Converter({ from: 'cn', to: 'tw' }),
+      hk: Converter({ from: 'cn', to: 'hk' }),
+      std: Converter({ from: 'cn', to: 't' }),
+    };
+  }
+  return converterCache[state.mode] || converterCache.tw;
+}
+
 function toTraditional(s) {
-  let out = s;
+  let out = activeConverter ? activeConverter(s) : s;
+  // Small post-fix fallback for crawler fragments or custom wording not covered by OpenCC.
   for (const [a,b] of phraseMap) out = out.replaceAll(a,b);
   if (state.mode === 'hk') for (const [a,b] of hkMap) out = out.replaceAll(a,b);
   return out;
@@ -203,7 +231,7 @@ function adjustParagraphs(lines, stats) {
     if (state.opts.splitLongParagraphs) parts = parts.flatMap(p => splitLongParagraph(p, max));
     if (parts.length > 1) stats.splitParagraphs += parts.length - 1;
     for (const p of parts) {
-      if (p.length > max * 1.8) stats.suspiciousParagraphs++;
+      if (p.length > max) stats.suspiciousParagraphs++;
       out.push(p);
       out.push('');
     }
