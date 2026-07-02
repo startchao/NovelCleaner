@@ -2,6 +2,8 @@ import './style.css';
 
 const state = {
   file: null,
+  files: [],
+  batchResults: [],
   raw: '',
   clean: '',
   title: '',
@@ -38,9 +40,9 @@ let converterCache = null;
 function render() {
   $('#app').innerHTML = `
   <main class="wrap">
-    <section class="hero"><div class="logo">📚</div><div><h1>轉書坊</h1><p>TXT/MD 小說前處理 · 修章名 · 去廣告 · 轉繁體 · 匯出 TXT/EPUB</p></div></section>
+    <section class="hero"><div class="logo">📚</div><div><h1>轉書坊</h1><p>TXT/MD 小說前處理 · 批次最多 5 檔 · 修章名 · 去廣告 · 轉繁體 · 匯出 TXT</p></div></section>
     <section class="card"><div class="sec-title">01 上傳小說檔案</div>
-      <div class="drop" id="drop"><div><div style="font-size:42px">📄</div><p class="hint">支援 TXT / MD · UTF‑8 / Big5 / GB18030 · 建議單檔 100MB 內</p><label class="filebtn">選擇檔案<input id="file" type="file" accept=".txt,.md,text/plain,text/markdown"></label><p id="fname" class="hint">${state.file ? esc(state.file.name) : '尚未選擇檔案'}</p></div></div>
+      <div class="drop" id="drop"><div><div style="font-size:42px">📄</div><p class="hint">支援 TXT / MD · UTF‑8 / Big5 / GB18030 · 可一次選 1–5 檔</p><label class="filebtn">選擇檔案<input id="file" type="file" multiple accept=".txt,.md,text/plain,text/markdown"></label><p id="fname" class="hint">${fileSummary()}</p>${batchListHtml()}</div></div>
     </section>
     <section class="card"><div class="sec-title">02 書籍資訊</div>
       <div class="grid two"><label>書名<input class="textin" id="title" value="${esc(state.title)}" placeholder="留空自動使用檔名 / 內文標題"></label><label>作者<input class="textin" id="author" value="${esc(state.author)}" placeholder="選填；可自動從 作者： 擷取"></label></div>
@@ -48,12 +50,28 @@ function render() {
     <section class="card"><div class="sec-title">03 處理選項</div><div class="opts">${optRows()}</div>
       <div class="grid two" style="margin-top:12px"><label>長段落檢查門檻<input class="textin" id="paragraphMax" type="number" min="120" max="800" step="20" value="${state.paragraphMax}"></label><p class="hint">預設不硬切句子，只標記過長段落；如果要自動切，才打開「長段落自動切分」。</p></div><div class="seg" style="margin-top:12px"><button data-mode="tw" class="${state.mode==='tw'?'on':''}">台灣用詞</button><button data-mode="hk" class="${state.mode==='hk'?'on':''}">香港用詞</button><button data-mode="std" class="${state.mode==='std'?'on':''}">標準繁體</button></div>
     </section>
-    <section class="card"><div class="sec-title">04 輸出格式</div><div class="seg"><button data-output="txt" class="${state.output==='txt'?'on':''}">處理後 TXT</button><button data-output="epub" class="${state.output==='epub'?'on':''}">EPUB 檔案</button></div></section>
-    <section class="card"><div class="actions"><button class="primary" id="run">⚡ 開始處理</button><button class="ghost" id="downloadTxt" ${state.clean?'':'disabled'}>下載 TXT</button><button class="ghost" id="downloadEpub" ${state.clean?'':'disabled'}>下載 EPUB</button></div>${statsHtml()}</section>
+    <section class="card"><div class="sec-title">04 輸出格式</div><div class="seg"><button data-output="txt" class="${state.output==='txt'?'on':''}">處理後 TXT</button><button data-output="epub" class="${state.output==='epub'?'on':''}">HTML（過渡）</button></div></section>
+    <section class="card"><div class="actions"><button class="primary" id="run">⚡ ${state.files.length > 1 ? `批次處理 ${state.files.length} 檔` : '開始處理'}</button><button class="ghost" id="downloadTxt" ${state.clean?'':'disabled'}>${state.batchResults.length > 1 ? '下載全部 TXT' : '下載 TXT'}</button><button class="ghost" id="downloadEpub" ${state.clean && state.batchResults.length <= 1?'':'disabled'}>下載 HTML</button></div>${statsHtml()}</section>
     <section class="card"><div class="sec-title">05 處理紀錄</div><div class="log" id="log">${state.stats ? esc(state.stats.log.join('\n')) : '尚未處理。'}</div></section>
     <section class="card"><div class="sec-title">06 預覽</div><textarea readonly>${esc(state.clean.slice(0, 12000))}</textarea><p class="hint">預覽最多顯示前 12,000 字；下載會輸出完整內容。</p></section>
   </main>`;
   bind();
+}
+
+function fileSummary() {
+  if (!state.files.length) return state.file ? esc(state.file.name) : '尚未選擇檔案';
+  return `已選 ${state.files.length} 檔：${state.files.map(x => esc(x.file.name)).join('、')}`;
+}
+
+function batchListHtml() {
+  if (!state.files.length && !state.batchResults.length) return '';
+  const rows = (state.batchResults.length ? state.batchResults : state.files).map((item, idx) => {
+    const name = item.file?.name || item.name || `第 ${idx + 1} 檔`;
+    const stats = item.stats ? ` · ${item.stats.outChars.toLocaleString()} 字 · ${item.stats.chapters} 章` : '';
+    const status = item.clean ? '<span class="ok">已處理</span>' : '<span class="warn">待處理</span>';
+    return `<div class="batch-row"><b>${idx + 1}. ${esc(name)}</b><span>${status}${stats}</span></div>`;
+  }).join('');
+  return `<div class="batch-list">${rows}</div>`;
 }
 
 function optRows() {
@@ -79,11 +97,11 @@ function statsHtml() {
 }
 
 function bind() {
-  $('#file')?.addEventListener('change', e => loadFile(e.target.files[0]));
+  $('#file')?.addEventListener('change', e => loadFiles(e.target.files));
   const drop = $('#drop');
   drop?.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
   drop?.addEventListener('dragleave', () => drop.classList.remove('drag'));
-  drop?.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); loadFile(e.dataTransfer.files[0]); });
+  drop?.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); loadFiles(e.dataTransfer.files); });
   $('#title')?.addEventListener('input', e => state.title = e.target.value);
   $('#author')?.addEventListener('input', e => state.author = e.target.value);
   $('#paragraphMax')?.addEventListener('input', e => state.paragraphMax = Number(e.target.value) || 220);
@@ -95,16 +113,31 @@ function bind() {
   $('#downloadEpub')?.addEventListener('click', () => downloadEpub());
 }
 
-async function loadFile(file) {
-  if (!file) return;
-  state.file = file;
-  const buf = await file.arrayBuffer();
-  state.raw = decodeBuffer(buf);
-  if (!state.title) state.title = file.name.replace(/\.(txt|md)$/i, '');
-  const author = state.raw.match(/作者[：: ]+([^\n\r]{1,30})/);
-  if (author && !state.author) state.author = author[1].trim();
+async function loadFiles(fileList) {
+  const selected = [...(fileList || [])].filter(f => /\.(txt|md)$/i.test(f.name) || /^text\//.test(f.type));
+  if (!selected.length) return;
+  if (selected.length > 5) alert('批次處理最多 5 個檔案；已自動取前 5 個。');
+  const files = selected.slice(0, 5);
+  const loaded = [];
+  for (const file of files) {
+    const buf = await file.arrayBuffer();
+    const raw = decodeBuffer(buf);
+    const author = raw.match(/作者[：: ]+([^\n\r]{1,30})/);
+    loaded.push({
+      file, raw,
+      title: file.name.replace(/\.(txt|md)$/i, ''),
+      author: author ? author[1].trim() : '',
+      clean: '', stats: null,
+    });
+  }
+  state.files = loaded;
+  state.file = loaded[0].file;
+  state.raw = loaded[0].raw;
+  state.title = loaded.length === 1 ? loaded[0].title : '';
+  state.author = loaded.length === 1 ? loaded[0].author : '';
   state.clean = '';
   state.stats = null;
+  state.batchResults = [];
   render();
 }
 
@@ -117,12 +150,31 @@ function decodeBuffer(buf) {
 }
 
 async function processNovel() {
-  if (!state.raw) return alert('請先選擇 TXT / MD 檔案');
+  if (!state.raw && !state.files.length) return alert('請先選擇 TXT / MD 檔案');
+  const targets = state.files.length ? state.files : [{ file: state.file, raw: state.raw, title: state.title || state.file?.name?.replace(/\.(txt|md)$/i, '') || 'novel', author: state.author }];
+  const results = [];
+  for (const item of targets.slice(0, 5)) {
+    const title = targets.length === 1 ? (state.title || item.title) : item.title;
+    const author = targets.length === 1 ? (state.author || item.author) : item.author;
+    const result = await processRawNovel(item.raw, item.file, title, author);
+    results.push({ ...item, ...result, title, author });
+  }
+  state.batchResults = results;
+  state.file = results[0].file;
+  state.raw = results[0].raw;
+  state.title = results.length === 1 ? results[0].title : '';
+  state.author = results.length === 1 ? results[0].author : '';
+  state.clean = results[0].clean;
+  state.stats = results.length === 1 ? results[0].stats : aggregateStats(results);
+  render();
+}
+
+async function processRawNovel(raw, file, title, author) {
   const log = [];
-  let lines = state.raw.replace(/\r\n?/g, '\n').split('\n');
+  let lines = raw.replace(/\r\n?/g, '\n').split('\n');
   const before = lines.join('\n').length;
   const stats = { chapters: 0, removedAds: 0, removedSeparators: 0, removedDupes: 0, removedFront: 0, mergedLines: 0, splitParagraphs: 0, suspiciousParagraphs: 0, outChars: 0, log };
-  log.push(`讀入：${state.file?.name || '文字'}，${before.toLocaleString()} 字`);
+  log.push(`讀入：${file?.name || title || '文字'}，${before.toLocaleString()} 字`);
 
   lines = lines.map(l => l.replace(/\u00a0/g, ' ').replace(/[ \t]+$/g, ''));
   if (state.opts.removeAds) lines = removeAds(lines, stats);
@@ -147,9 +199,18 @@ async function processNovel() {
   if (stats.mergedLines) stats.log.push(`已合併疑似錯誤換行：${stats.mergedLines} 行`);
   if (stats.splitParagraphs) stats.log.push(`已切分過長／對話段落：${stats.splitParagraphs} 段`);
   if (stats.suspiciousParagraphs) stats.log.push(`仍有偏長段落需人工檢查：${stats.suspiciousParagraphs} 段`);
-  state.clean = txt;
-  state.stats = stats;
-  render();
+  return { clean: txt, stats };
+}
+
+function aggregateStats(results) {
+  const totals = { chapters: 0, removedAds: 0, removedSeparators: 0, removedDupes: 0, removedFront: 0, mergedLines: 0, splitParagraphs: 0, suspiciousParagraphs: 0, outChars: 0, log: [] };
+  for (const r of results) {
+    for (const k of ['chapters','removedAds','removedSeparators','removedDupes','removedFront','mergedLines','splitParagraphs','suspiciousParagraphs','outChars']) totals[k] += r.stats[k] || 0;
+    totals.log.push(`【${r.file?.name || r.title}】`);
+    totals.log.push(...r.stats.log);
+  }
+  totals.log.unshift(`批次完成：${results.length} 檔`);
+  return totals;
 }
 
 function removeAds(lines, stats) {
@@ -296,13 +357,19 @@ function cleanChapters(lines, stats) {
   }
   return out;
 }
-function safeName(ext) {
-  return `${(state.title || 'novel').replace(/[\\/:*?"<>|]/g, '_')}.${ext}`;
+function safeName(ext, title = state.title || 'novel') {
+  return `${title.replace(/[\\/:*?"<>|]/g, '_')}.${ext}`;
 }
 function downloadBlob(blob, name) {
   const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1200);
 }
-function downloadText() { if (!state.clean) return; downloadBlob(new Blob([state.clean], { type: 'text/plain;charset=utf-8' }), safeName('txt')); }
+function downloadText() {
+  const results = state.batchResults.length ? state.batchResults : [{ clean: state.clean, title: state.title || 'novel' }];
+  if (!results[0]?.clean) return;
+  results.forEach((r, i) => setTimeout(() => {
+    downloadBlob(new Blob([r.clean], { type: 'text/plain;charset=utf-8' }), safeName('txt', r.title || r.file?.name?.replace(/\.(txt|md)$/i, '') || `novel-${i+1}`));
+  }, i * 350));
+}
 function downloadEpub() {
   if (!state.clean) return;
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(state.title || 'Novel')}</title><style>body{font-family:serif;line-height:1.7}h1{page-break-before:always}p{text-indent:2em;margin:.8em 0}</style></head><body>${state.clean.split('\n').map(l => isChapterTitle(l) ? `<h1>${esc(l)}</h1>` : l ? `<p>${esc(l)}</p>` : '').join('\n')}</body></html>`;
