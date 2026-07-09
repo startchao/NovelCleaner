@@ -1,5 +1,7 @@
 import './style.css';
 
+const APP_VERSION = '1.1.0';
+
 const state = {
   file: null,
   files: [],
@@ -40,7 +42,7 @@ let converterCache = null;
 function render() {
   $('#app').innerHTML = `
   <main class="wrap">
-    <section class="hero"><div class="logo">📚</div><div><h1>轉書坊</h1><p>TXT/MD 小說前處理 · 批次最多 5 檔 · 修章名 · 去廣告 · 轉繁體 · 匯出 TXT</p></div></section>
+    <section class="hero"><div class="logo">📚</div><div><h1>轉書坊</h1><p>TXT/MD 小說前處理 · 批次最多 5 檔 · 修章名 · 去廣告 · 轉繁體 · 匯出 TXT · v${APP_VERSION}</p></div></section>
     <section class="card"><div class="sec-title">01 上傳小說檔案</div>
       <div class="drop" id="drop"><div><div style="font-size:42px">📄</div><p class="hint">支援 TXT / MD · UTF‑8 / Big5 / GB18030 · 可一次選 1–5 檔</p><label class="filebtn">選擇檔案<input id="file" type="file" multiple accept=".txt,.md,text/plain,text/markdown"></label><p id="fname" class="hint">${fileSummary()}</p>${batchListHtml()}</div></div>
     </section>
@@ -76,7 +78,7 @@ function batchListHtml() {
 
 function optRows() {
   const defs = [
-    ['removeAds','廣告與網站名過濾','移除爬蟲網站插入的廣告、網址與閱讀提示'],
+    ['removeAds','廣告與網站名過濾','移除爬蟲網站插入的廣告、網址、熱門書名堆疊與閱讀提示'],
     ['removeSeparators','分隔線清除','移除 ===、---、~~~、＊ 等純符號行'],
     ['fixBrokenWords','修復拆字詞彙','修正「谷欠→欲、氵去→法、身寸→射」等常見避審拆字'],
     ['convertTraditional','簡體→繁體轉換','改用 OpenCC 轉換：台灣、香港、標準繁體三種模式'],
@@ -213,6 +215,12 @@ function aggregateStats(results) {
   return totals;
 }
 
+const AD_KEYWORD_STACK = [
+  '武動乾坤', '武动乾坤', '聖王', '圣王', '造神', '將夜', '将夜',
+  '殺神', '杀神', '神印王座', '求魔', '傲世九重天', '最強棄少',
+  '最强弃少', '大周皇族',
+];
+
 function removeAds(lines, stats) {
   const patterns = [
     /https?:\/\//i,/www\./i,/\.com|\.net|\.org|\.tw|\.cn/i,
@@ -224,7 +232,48 @@ function removeAds(lines, stats) {
     /筆趣閣|笔趣阁|起點中文|起点中文|番茄小說|番茄小说/i,
     /飄天|飘天|piaotian|ptwx|69書吧|69书吧|六九書吧|六九书吧|69shu|69shuba|69zw|69txt/i,
   ];
-  return lines.filter(l => { const hit = patterns.some(p => p.test(l)); if (hit) stats.removedAds++; return !hit; });
+  const out = [];
+  for (const line of lines) {
+    if (patterns.some(p => p.test(line))) { stats.removedAds++; continue; }
+    const cleaned = removeAdKeywordStacks(line);
+    if (cleaned !== line) stats.removedAds++;
+    if (cleaned.trim()) out.push(cleaned);
+  }
+  return out;
+}
+
+function removeAdKeywordStacks(line) {
+  let text = line;
+  for (let guard = 0; guard < 8; guard++) {
+    const hits = [];
+    for (const kw of AD_KEYWORD_STACK) {
+      let pos = text.indexOf(kw);
+      while (pos !== -1) {
+        hits.push({ kw, start: pos, end: pos + kw.length });
+        pos = text.indexOf(kw, pos + kw.length);
+      }
+    }
+    hits.sort((a, b) => a.start - b.start || b.kw.length - a.kw.length);
+    const window = findAdKeywordWindow(hits);
+    if (!window) break;
+    text = `${text.slice(0, window.start)}${text.slice(window.end)}`.replace(/ {2,}/g, ' ').trim();
+  }
+  return text;
+}
+
+function findAdKeywordWindow(hits) {
+  for (let i = 0; i < hits.length; i++) {
+    const seen = new Set([hits[i].kw]);
+    let start = hits[i].start;
+    let end = hits[i].end;
+    for (let j = i + 1; j < hits.length; j++) {
+      if (hits[j].start - end > 18) break;
+      seen.add(hits[j].kw);
+      end = Math.max(end, hits[j].end);
+      if (seen.size >= 3 && end - start <= 220) return { start, end };
+    }
+  }
+  return null;
 }
 function removeSeparators(lines, stats) {
   return lines.filter(l => { const t = l.trim(); const hit = /^[=\-—_~＊*·•。\s]{3,}$/.test(t); if (hit) stats.removedSeparators++; return !hit; });
