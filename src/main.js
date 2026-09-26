@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 const state = {
   file: null,
@@ -23,6 +23,7 @@ const state = {
     removeFrontMatter: true,
     normalizeSpacing: true,
     repairBrokenLines: true,
+    splitBracketBlocks: true,
     splitLongParagraphs: false,
     splitDialogueParagraphs: true,
   },
@@ -43,6 +44,7 @@ function render() {
   $('#app').innerHTML = `
   <main class="wrap">
     <section class="hero"><div class="logo">📚</div><div><h1>轉書坊</h1><p>TXT/MD 小說前處理 · 批次最多 5 檔 · 修章名 · 去廣告 · 轉繁體 · 匯出 TXT · v${APP_VERSION}</p></div></section>
+    <section class="card"><div class="actions"><button class="ghost" id="forceRefresh" type="button">⟳ 強制刷新快取／更新程式</button><span class="hint">重新載入會清空尚未下載的處理結果；不會刪除原始小說檔案。</span></div></section>
     <section class="card"><div class="sec-title">01 上傳小說檔案</div>
       <div class="drop" id="drop"><div><div style="font-size:42px">📄</div><p class="hint">支援 TXT / MD · UTF‑8 / Big5 / GB18030 · 可一次選 1–5 檔</p><label class="filebtn">選擇檔案<input id="file" type="file" multiple accept=".txt,.md,text/plain,text/markdown"></label><p id="fname" class="hint">${fileSummary()}</p>${batchListHtml()}</div></div>
     </section>
@@ -86,6 +88,7 @@ function optRows() {
     ['removeFrontMatter','移除章節前雜訊','刪除章名後緊接的日期、作者、來源、空白 metadata 行'],
     ['normalizeSpacing','空白與段落整理','合併過多空行、整理全形空白與標點周圍空格'],
     ['repairBrokenLines','錯誤換行修復','把被硬切成多行的同一段文字合併，避免一句話被切碎'],
+    ['splitBracketBlocks','連續括號區塊分段（預設開）','將相連的【…】【…】、（…）（…）等區塊分開成段，保留原文'],
     ['splitLongParagraphs','長段落自動切分（預設關）','只在你明確打開時，才依標點把超長段落切開；平常只檢查不硬切'],
     ['splitDialogueParagraphs','對話段落整理','只針對引號對話與「某某說道」這類明顯邊界補分行，避免整頁黏成一段'],
   ];
@@ -113,6 +116,34 @@ function bind() {
   $('#run')?.addEventListener('click', processNovel);
   $('#downloadTxt')?.addEventListener('click', () => downloadText());
   $('#downloadEpub')?.addEventListener('click', () => downloadEpub());
+  $('#forceRefresh')?.addEventListener('click', forceRefreshApp);
+}
+
+async function forceRefreshApp() {
+  if (!confirm('強制刷新會重新載入轉書坊，未下載的處理結果將消失。要繼續嗎？')) return;
+  const button = $('#forceRefresh');
+  if (button) { button.disabled = true; button.textContent = '更新中…'; }
+  const appPath = new URL('.', document.baseURI).pathname;
+  try {
+    if ('serviceWorker' in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.filter(reg => new URL(reg.scope).pathname.startsWith(appPath)).map(reg => reg.unregister()));
+    }
+    if ('caches' in window) {
+      for (const name of await caches.keys()) {
+        const cache = await caches.open(name);
+        const requests = await cache.keys();
+        await Promise.all(requests.filter(req => { const url = new URL(req.url); return url.origin === location.origin && url.pathname.startsWith(appPath); }).map(req => cache.delete(req)));
+      }
+    }
+  } catch (error) {
+    alert(`清除程式快取失敗：${error.message}`);
+    if (button) { button.disabled = false; button.textContent = '⟳ 強制刷新快取／更新程式'; }
+    return;
+  }
+  const url = new URL(location.href);
+  url.searchParams.set('_force_refresh', String(Date.now()));
+  location.replace(url.href);
 }
 
 async function loadFiles(fileList) {
@@ -190,7 +221,7 @@ async function processRawNovel(raw, file, title, author) {
   if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
   if (state.opts.repairBrokenLines) lines = repairBrokenLines(lines, stats);
   if (state.opts.dedupeChapterTitles || state.opts.removeFrontMatter) lines = cleanChapters(lines, stats);
-  if (state.opts.splitDialogueParagraphs || state.opts.splitLongParagraphs) lines = adjustParagraphs(lines, stats);
+  if (state.opts.splitBracketBlocks || state.opts.splitDialogueParagraphs || state.opts.splitLongParagraphs) lines = adjustParagraphs(lines, stats);
   if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
 
   const txt = lines.join('\n').trim() + '\n';
@@ -337,6 +368,7 @@ function adjustParagraphs(lines, stats) {
     const line = original.trim();
     if (!line || isChapterTitle(line) || isMeta(line)) { out.push(line); continue; }
     let parts = [line];
+    if (state.opts.splitBracketBlocks) parts = splitBracketBlocks(parts);
     if (state.opts.splitDialogueParagraphs) parts = splitDialogue(parts);
     if (state.opts.splitLongParagraphs) parts = parts.flatMap(p => splitLongParagraph(p, max));
     if (parts.length > 1) stats.splitParagraphs += parts.length - 1;
@@ -347,6 +379,10 @@ function adjustParagraphs(lines, stats) {
     }
   }
   return out;
+}
+
+function splitBracketBlocks(parts) {
+  return parts.flatMap(part => part.replace(/([】］）)〕〉》])\s*([【［（(〔〈《])/g, '$1\n\n$2').split(/\n{2,}/).map(text => text.trim()).filter(Boolean));
 }
 
 function splitDialogue(parts) {
