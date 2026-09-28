@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 
 const state = {
   file: null,
@@ -253,6 +253,10 @@ const AD_KEYWORD_STACK = [
 ];
 
 function removeAds(lines, stats) {
+  const targetedPatterns = [
+    /在?一一看.{0,8}無.{0,5}錯版本[！!]?/g,
+    /在?一一看.{0,8}无.{0,5}错版本[！!]?/g,
+  ];
   const patterns = [
     /https?:\/\//i,/www\./i,/\.com|\.net|\.org|\.tw|\.cn/i,
     /請收藏|请收藏|收藏本站|加入書架|加入书架/i,
@@ -265,8 +269,10 @@ function removeAds(lines, stats) {
   ];
   const out = [];
   for (const line of lines) {
-    if (patterns.some(p => p.test(line))) { stats.removedAds++; continue; }
-    const cleaned = removeAdKeywordStacks(line);
+    let candidate = line;
+    for (const pattern of targetedPatterns) candidate = candidate.replace(pattern, '');
+    if (patterns.some(p => p.test(candidate))) { stats.removedAds++; continue; }
+    const cleaned = removeAdKeywordStacks(candidate);
     if (cleaned !== line) stats.removedAds++;
     if (cleaned.trim()) out.push(cleaned);
   }
