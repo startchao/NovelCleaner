@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 
 const state = {
   file: null,
@@ -23,6 +23,8 @@ const state = {
     removeFrontMatter: true,
     normalizeSpacing: true,
     repairBrokenLines: true,
+    normalizeBrackets: true,
+    extractChapterMarkers: true,
     splitBracketBlocks: true,
     splitLongParagraphs: false,
     splitDialogueParagraphs: true,
@@ -88,6 +90,8 @@ function optRows() {
     ['removeFrontMatter','移除章節前雜訊','刪除章名後緊接的日期、作者、來源、空白 metadata 行'],
     ['normalizeSpacing','空白與段落整理','合併過多空行、整理全形空白與標點周圍空格'],
     ['repairBrokenLines','錯誤換行修復','把被硬切成多行的同一段文字合併，避免一句話被切碎'],
+    ['normalizeBrackets','括號正規化','對話引號 “ ” 改「 」、次引號改『 』、小括號改全形（）、系統訊息 [ ] 改【 】（純數字註腳保留）'],
+    ['extractChapterMarkers','內文夾帶章名擷取','把夾在內文行裡的「短前綴＋第N章＋標題（序號）」標記切出來獨立成章名行，避免整段章節併成一坨；同時排除「第N回合」這類內文句子誤判'],
     ['splitBracketBlocks','連續括號區塊分段（預設開）','將相連的【…】【…】、（…）（…）等區塊分開成段，保留原文'],
     ['splitLongParagraphs','長段落自動切分（預設關）','只在你明確打開時，才依標點把超長段落切開；平常只檢查不硬切'],
     ['splitDialogueParagraphs','對話段落整理','只針對引號對話與「某某說道」這類明顯邊界補分行，避免整頁黏成一段'],
@@ -218,6 +222,8 @@ async function processRawNovel(raw, file, title, author) {
     lines = lines.map(toTraditional);
     log.push(`已使用 OpenCC 轉換為${state.mode === 'hk' ? '香港繁體' : state.mode === 'std' ? '標準繁體' : '台灣繁體'}`);
   }
+  if (state.opts.normalizeBrackets) lines = normalizeBrackets(lines, log);
+  if (state.opts.extractChapterMarkers) lines = extractEmbeddedChapterMarkers(lines, log);
   if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
   if (state.opts.repairBrokenLines) lines = repairBrokenLines(lines, stats);
   if (state.opts.dedupeChapterTitles || state.opts.removeFrontMatter) lines = cleanChapters(lines, stats);
@@ -419,9 +425,53 @@ function splitLongParagraph(text, max) {
   });
 }
 
+function normalizeBrackets(lines, log) {
+  let changed = 0;
+  const out = lines.map(line => {
+    let t = line;
+    // 系統訊息 [ ] → 【 】，但純數字註腳 [1] 保留
+    t = t.replace(/\[(?!\d+\])/g, '【').replace(/(?<!\[\d)\]/g, '】');
+    // 小括號半形 → 全形
+    t = t.replace(/\(/g, '（').replace(/\)/g, '）');
+    // 對話引號 “ ” → 「 」
+    t = t.replace(/“/g, '「').replace(/”/g, '」');
+    // 強調／次引號 ‘ ’ 成對 → 『 』（逐行配對，避免誤傷英文撇號）
+    t = t.replace(/‘([^‘’]{1,30})’/g, '『$1』');
+    if (t !== line) changed++;
+    return t;
+  });
+  if (changed && log) log.push(`已正規化括號（對話「」、次引號『』、全形括號、系統訊息【】）：${changed} 行`);
+  return out;
+}
+
+const EMBED_MARKER_RE = /([^\s。，、！？：；「」『』【】]{1,14})(第[0-9]+章.{0,40}?[\(（](?:[0-9一二三四五六七八九十]+|完成)[\)）])/;
+
+function extractEmbeddedChapterMarkers(lines, log) {
+  let found = 0;
+  const out = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || isChapterTitle(t)) { out.push(line); continue; }
+    const m = t.match(EMBED_MARKER_RE);
+    if (m && (m.index > 0 || m[0].length < t.length)) {
+      if (m.index > 0) out.push(t.slice(0, m.index));
+      out.push(m[2]); // 去掉書名等短前綴，讓擷取出的章名能被後續流程辨識
+      const rest = t.slice(m.index + m[0].length);
+      if (rest) out.push(rest);
+      found++;
+    } else out.push(line);
+  }
+  if (found && log) log.push(`已擷取夾在內文裡的章名標記：${found} 處`);
+  return out;
+}
+
 function isChapterTitle(line) {
   const t = line.trim();
-  return /^(第[零〇一二兩三四五六七八九十百千萬\d]+[章回卷節集部篇].{0,40}|Chapter\s*\d+.{0,40}|\d+[\.、]\s*.{1,40})$/i.test(t);
+  if (!t || t.length > 60) return false;
+  if (/^第[0-9]+回合/.test(t)) return false; // 「第999回合…」是內文（輪迴次數），不是章名
+  if (/。/.test(t)) return false; // 含句號的是完整句子，不是章名
+  return /^(第[零〇一二兩三四五六七八九十百千萬\d]+[章回卷節集部篇].{0,40}|Chapter\s*\d+.{0,40}|\d+[\.、]\s*.{1,40})$/i.test(t)
+    || /^[^\s。，、！？：；「」『』【】]{1,14}第[0-9]+章$/.test(t); // 書名等短前綴＋第N章（站方夾帶格式）
 }
 function isMeta(line) {
   const t = line.trim();
