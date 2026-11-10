@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.3.2';
 
 const state = {
   file: null,
@@ -25,6 +25,7 @@ const state = {
     repairBrokenLines: true,
     normalizeBrackets: true,
     extractChapterMarkers: true,
+    removeChapterFooters: true,
     splitBracketBlocks: true,
     splitLongParagraphs: false,
     splitDialogueParagraphs: true,
@@ -92,6 +93,7 @@ function optRows() {
     ['repairBrokenLines','錯誤換行修復','把被硬切成多行的同一段文字合併，避免一句話被切碎'],
     ['normalizeBrackets','括號正規化','對話引號 “ ” 改「 」、次引號改『 』、小括號改全形（）、系統訊息 [ ] 改【 】（純數字註腳保留）'],
     ['extractChapterMarkers','內文夾帶章名擷取','把夾在內文行裡的「短前綴＋第N章＋標題（序號）」標記切出來獨立成章名行，避免整段章節併成一坨；同時排除「第N回合」這類內文句子誤判'],
+    ['removeChapterFooters','章末重複頁尾移除','移除每章結尾與下一章同名的重錄標題行（英文書名 Chapter N／書名第N章 Episode…），夾在句尾的只切標記、不動內文'],
     ['splitBracketBlocks','連續括號區塊分段（預設開）','將相連的【…】【…】系統訊息逐則分段、場景窗格的類別／難度／通關條件等欄位各自成段，開頭系統訊息後接的敘述也獨立成段'],
     ['splitLongParagraphs','長段落自動切分（預設關）','只在你明確打開時，才依標點把超長段落切開；平常只檢查不硬切'],
     ['splitDialogueParagraphs','對話段落整理','只針對引號對話與「某某說道」這類明顯邊界補分行，避免整頁黏成一段'],
@@ -224,6 +226,7 @@ async function processRawNovel(raw, file, title, author) {
   }
   if (state.opts.normalizeBrackets) lines = normalizeBrackets(lines, log);
   if (state.opts.extractChapterMarkers) lines = extractEmbeddedChapterMarkers(lines, log);
+  if (state.opts.removeChapterFooters) lines = removeChapterFooters(lines, log);
   if (state.opts.normalizeSpacing) lines = normalizeSpacing(lines);
   if (state.opts.repairBrokenLines) lines = repairBrokenLines(lines, stats);
   if (state.opts.dedupeChapterTitles || state.opts.removeFrontMatter) lines = cleanChapters(lines, stats);
@@ -393,20 +396,111 @@ function adjustParagraphs(lines, stats) {
   return out;
 }
 
+const FIELD_COMPOUND = ['私人屬性', '整體屬性', '綜合屬性', '獨家技能', '專有技能', '個人信息', '人物簡介'];
+const FIELD_WINDOW = ['類別', '難度', '通關條件', '時限', '補償', '失敗', '獎勵'];
+const FIELD_SIMPLE = ['姓名', '屬性', '稱號', '年齡', '性別', '職業'];
+
 function splitBracketBlocks(parts) {
   return parts.flatMap(part => {
-    let t = part.replace(/([】］）)〕〉》])\s*([【［（(〔〈《])/g, '$1\n\n$2');
+    let t = part.replace(/([】］〕〉》])\s*([【［（(〔〈《])/g, '$1\n\n$2');
+    t = t.replace(/([）)])\s*([【［〔〈《])/g, '$1\n\n$2');
+    // ）→（ 只在前一組內容夠長時才分段，避免把（第三回合）（神話）這類短修飾語切開
+    t = t.replace(/([）)])\s*(?=[（(])/g, (mm, p1, off, s) => {
+      const upto = s.slice(0, off);
+      const open = Math.max(upto.lastIndexOf('（'), upto.lastIndexOf('('));
+      return (off - open - 1) <= 8 ? p1 : p1 + '\n\n';
+    });
     // 摺疊窗格標記 】+【主場景…】：+ 留在下一區塊開頭，整塊獨立成段
     t = t.replace(/】(?=\+【)/g, '】\n\n');
-    // 場景窗格欄位（類別：／難度：／通關條件：…）各自成段
-    t = t.replace(/(?<=[^\s])(?=(?:類別|難度|通關條件|時限|補償|失敗|獎勵)[：:])/g, '\n\n');
+    // 窗格欄位（場景：類別／難度／通關條件…；人物：姓名／私人屬性／整體屬性／獨家技能…）各自成段
+    t = t.replace(new RegExp(`(?<=[^\\s])(?=(?:${[...FIELD_COMPOUND, ...FIELD_WINDOW].join('|')})[：:])`, 'g'), '\n\n');
+    t = t.replace(new RegExp(`(?<=[^\\s])(?<!私人)(?<!整體)(?<!綜合)(?=(?:${FIELD_SIMPLE.join('|')})[：:])`, 'g'), '\n\n');
     return t.split(/\n{2,}/).map(x => x.trim()).filter(Boolean).flatMap(chunk => {
       // 段落以一連串【…】系統訊息開頭、後面接敘述時，敘述切成新段
       const m = chunk.match(/^((?:【[^】]*】)+)([\s\S]+)$/);
-      if (m && m[2].trim()) return [m[1], m[2].trim()];
-      return [chunk];
+      const pieces = (m && m[2].trim()) ? [m[1], m[2].trim()] : [chunk];
+      return pieces.flatMap(p => {
+        if (/^(?:獨家技能|專有技能|Exclusive Skills)\s*[：:]/i.test(p) || (p.match(/Lv\./g) || []).length >= 3) return splitSkillList(p);
+        if (/^(?:整體屬性|綜合屬性|整體能力)\s*[：:]/.test(p)) return splitStatList(p);
+        return [p];
+      });
     });
   });
+}
+
+function splitSkillList(chunk) {
+  const m = chunk.match(/^(獨家技能|專有技能|Exclusive Skills)\s*[：:]\s*/i);
+  const label = m ? m[0].trim() : null;
+  const rest = m ? chunk.slice(m[0].length) : chunk;
+  if (!label && (chunk.match(/Lv\./g) || []).length < 3) return [chunk];
+  const segs = rest.split(/[，,]\s*/);
+  const items = [];
+  let tail = '';
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i].trim();
+    if (!s) continue;
+    if (s.includes('Lv.')) {
+      const mm = s.match(/^(.*Lv\.\s*\d+)([\s\S]*)$/);
+      items.push(mm[1].trim());
+      const rem = mm[2].trim();
+      if (rem) { tail = rem + (i + 1 < segs.length ? '，' + segs.slice(i + 1).join('，') : ''); break; }
+    } else {
+      tail = s + (i + 1 < segs.length ? '，' + segs.slice(i + 1).join('，') : '');
+      break;
+    }
+  }
+  const out = [];
+  if (label) out.push(label);
+  out.push(...items);
+  if (tail) out.push(tail);
+  return out.length > 1 ? out : [chunk];
+}
+
+function splitStatList(chunk) {
+  const m = chunk.match(/^(整體屬性|綜合屬性|整體能力)\s*[：:]\s*/);
+  if (!m) return [chunk];
+  const segs = chunk.slice(m[0].length).split(/[，,]\s*/).map(s => s.trim()).filter(Boolean);
+  if (segs.length < 2) return [chunk];
+  return [m[0].trim(), ...segs];
+}
+
+const ENG_FOOTER_MARK = /[A-Za-z][A-Za-z' ]*Chapter\s*[0-9]+/;
+const CN_FOOTER_RE = /^[^\s。，、！？：；]{1,20}第[0-9一二三四五六七八九十百千零兩]+章/;
+
+function isFooterTail(tail) {
+  if (/[。！？]/.test(tail) || !ENG_FOOTER_MARK.test(tail.slice(0, 60))) return false;
+  if (tail.length <= 110) return true;
+  return tail.length <= 170 && (tail.match(/Chapter/g) || []).length >= 2;
+}
+
+function removeChapterFooters(lines, log) {
+  let removed = 0;
+  const isRecapLine = (t) => {
+    if (!t) return false;
+    const m = t.match(ENG_FOOTER_MARK);
+    if (m && isFooterTail(t.slice(m.index))) return true;
+    return CN_FOOTER_RE.test(t) && !/[。！？]/.test(t) && t.length <= 110;
+  };
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    const m = t.match(ENG_FOOTER_MARK);
+    if (m && isFooterTail(t.slice(m.index))) {
+      const rest = t.slice(0, m.index).trim();
+      if (rest) out.push(rest); // 夾在句尾：只切標記，保留內文
+      removed++;
+      continue;
+    }
+    if (CN_FOOTER_RE.test(t) && !/[。！？]/.test(t) && t.length <= 110) {
+      // 中文重錄行：只有後面緊接章名（或另一行重錄頁尾）時才移除
+      let j = i + 1;
+      while (j < lines.length && (!lines[j].trim() || isRecapLine(lines[j].trim()))) j++;
+      if (j >= lines.length || isChapterTitle(lines[j].trim())) { removed++; continue; }
+    }
+    out.push(lines[i]);
+  }
+  if (removed && log) log.push(`已移除章末重複頁尾：${removed} 處`);
+  return out;
 }
 
 function splitDialogue(parts) {
