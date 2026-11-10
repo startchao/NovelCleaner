@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 
 const state = {
   file: null,
@@ -92,7 +92,7 @@ function optRows() {
     ['repairBrokenLines','錯誤換行修復','把被硬切成多行的同一段文字合併，避免一句話被切碎'],
     ['normalizeBrackets','括號正規化','對話引號 “ ” 改「 」、次引號改『 』、小括號改全形（）、系統訊息 [ ] 改【 】（純數字註腳保留）'],
     ['extractChapterMarkers','內文夾帶章名擷取','把夾在內文行裡的「短前綴＋第N章＋標題（序號）」標記切出來獨立成章名行，避免整段章節併成一坨；同時排除「第N回合」這類內文句子誤判'],
-    ['splitBracketBlocks','連續括號區塊分段（預設開）','將相連的【…】【…】、（…）（…）等區塊分開成段，保留原文'],
+    ['splitBracketBlocks','連續括號區塊分段（預設開）','將相連的【…】【…】系統訊息逐則分段、場景窗格的類別／難度／通關條件等欄位各自成段，開頭系統訊息後接的敘述也獨立成段'],
     ['splitLongParagraphs','長段落自動切分（預設關）','只在你明確打開時，才依標點把超長段落切開；平常只檢查不硬切'],
     ['splitDialogueParagraphs','對話段落整理','只針對引號對話與「某某說道」這類明顯邊界補分行，避免整頁黏成一段'],
   ];
@@ -394,7 +394,19 @@ function adjustParagraphs(lines, stats) {
 }
 
 function splitBracketBlocks(parts) {
-  return parts.flatMap(part => part.replace(/([】］）)〕〉》])\s*([【［（(〔〈《])/g, '$1\n\n$2').split(/\n{2,}/).map(text => text.trim()).filter(Boolean));
+  return parts.flatMap(part => {
+    let t = part.replace(/([】］）)〕〉》])\s*([【［（(〔〈《])/g, '$1\n\n$2');
+    // 摺疊窗格標記 】+【主場景…】：+ 留在下一區塊開頭，整塊獨立成段
+    t = t.replace(/】(?=\+【)/g, '】\n\n');
+    // 場景窗格欄位（類別：／難度：／通關條件：…）各自成段
+    t = t.replace(/(?<=[^\s])(?=(?:類別|難度|通關條件|時限|補償|失敗|獎勵)[：:])/g, '\n\n');
+    return t.split(/\n{2,}/).map(x => x.trim()).filter(Boolean).flatMap(chunk => {
+      // 段落以一連串【…】系統訊息開頭、後面接敘述時，敘述切成新段
+      const m = chunk.match(/^((?:【[^】]*】)+)([\s\S]+)$/);
+      if (m && m[2].trim()) return [m[1], m[2].trim()];
+      return [chunk];
+    });
+  });
 }
 
 function splitDialogue(parts) {
@@ -437,6 +449,8 @@ function normalizeBrackets(lines, log) {
     t = t.replace(/“/g, '「').replace(/”/g, '」');
     // 強調／次引號 ‘ ’ 成對 → 『 』（逐行配對，避免誤傷英文撇號）
     t = t.replace(/‘([^‘’]{1,30})’/g, '『$1』');
+    // 括號內側多餘空白清除（「謝謝。 」→「謝謝。」）
+    t = t.replace(/([「『【（])\s+/g, '$1').replace(/\s+([」』】）])/g, '$1');
     if (t !== line) changed++;
     return t;
   });
